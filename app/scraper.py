@@ -1,7 +1,7 @@
 import logging
 import urllib.parse
 from typing import List, Dict, Any
-import requests
+import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 from .config import settings
@@ -10,26 +10,20 @@ from .models import Issue, SentimentData
 
 logger = logging.getLogger("app.scraper")
 
-# Target news portal search URL (HTTPS is enforced for security)
-BASE_SEARCH_URL = "https://www.antaranews.com/search"
+# Target Google News RSS for Indonesian news
+BASE_SEARCH_URL = "https://news.google.com/rss/search"
 
-async def scrape_and_store_sentiment(keyword: str, db: Session) -> List[SentimentData]:
+async def scrape_and_store_sentiment(
+    keyword: str, 
+    db: Session,
+    max_records: int = 50,
+    time_filter: str = "7d"
+) -> List[SentimentData]:
     """
-    Scrapes news articles from Antara News by keyword, analyzes their sentiment,
+    Scrapes news articles from Google News RSS by keyword, analyzes their sentiment,
     saves the results to the SentimentData database table, and returns the saved records.
-    
-    Args:
-        keyword (str): The search keyword based on an active issue.
-        db (Session): The SQLAlchemy database session.
-
-    Returns:
-        List[SentimentData]: A list of newly created and stored SentimentData records (max 100).
-
-    Raises:
-        ValueError: If no active issue matches the keyword or input validation fails.
-        RuntimeError: If scraping or database operations fail.
+    Runs asynchronously using httpx.
     """
-    # 1. Input validation & sanitization
     if not keyword or not isinstance(keyword, str):
         raise ValueError("Keyword must be a non-empty string.")
     
@@ -37,8 +31,7 @@ async def scrape_and_store_sentiment(keyword: str, db: Session) -> List[Sentimen
     if not sanitized_keyword:
         raise ValueError("Keyword cannot consist only of whitespace.")
 
-    # 2. Look up the active issue associated with this keyword
-    # Fallback checks both exact keyword match and partial match, prioritizing exact match
+    # Find the issue
     issue = db.query(Issue).filter(Issue.keyword == sanitized_keyword, Issue.is_active == True).first()
     if not issue:
         issue = db.query(Issue).filter(
@@ -50,116 +43,95 @@ async def scrape_and_store_sentiment(keyword: str, db: Session) -> List[Sentimen
         logger.error("Failed to find any active issue in database matching keyword: '%s'", sanitized_keyword)
         raise ValueError(f"No active issue found in the database for keyword: '{sanitized_keyword}'")
 
-    saved_records: List[SentimentData] = []
-    page_num = 1
-    max_records = 100
+    # Construct the search query
+    # Google News allows search operators like "when:7d" (7 days) or "when:1d" (24 hours)
+    search_query = sanitized_keyword
+    if time_filter and time_filter != "all":
+        search_query = f"{sanitized_keyword} when:{time_filter}"
+
+    params = {
+        "q": search_query,
+        "hl": "id",
+        "gl": "ID",
+        "ceid": "ID:id"
+    }
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
     }
 
-    logger.info("Starting scrape process for keyword '%s' (Issue ID: %s)...", sanitized_keyword, issue.id)
+    logger.info("Starting scrape process for query '%s' (Issue ID: %s), max_records: %s...", search_query, issue.id, max_records)
 
-    # Scrape loop, running until we reach 100 records, there are no more pages, or we exceed page limit
-    max_pages = 10
-    while len(saved_records) < max_records and page_num <= max_pages:
-        # Build search URL with query parameters
-        params = {
-            "q": sanitized_keyword,
-            "page": page_num
-        }
-        
-        try:
-            # Synchronous requests call to fetch the page
-            response = requests.get(BASE_SEARCH_URL, params=params, headers=headers, timeout=15.0)
+    saved_records: List[SentimentData] = []
+    
+    try:
+        # Use httpx AsyncClient to avoid blocking the thread
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(BASE_SEARCH_URL, params=params, headers=headers)
             response.raise_for_status()
-        except requests.RequestException as e:
-            logger.error("Failed to fetch search page %s for keyword '%s': %s", page_num, sanitized_keyword, e)
-            # If the first page fails completely, raise an error. Otherwise, break and save what we have.
-            if page_num == 1:
-                raise RuntimeError(f"Failed to initiate scraping for keyword '{sanitized_keyword}': {e}") from e
+            rss_text = response.text
+    except httpx.RequestError as e:
+        logger.error("Failed to fetch RSS for query '%s': %s", search_query, e)
+        raise RuntimeError(f"Failed to initiate scraping: {e}") from e
+
+    # Parse RSS XML using BeautifulSoup
+    # We can use html.parser since it correctly finds <item>, <title>, <description>, <source>
+    soup = BeautifulSoup(rss_text, "html.parser")
+    items = soup.find_all("item")
+    
+    if not items:
+        logger.info("No articles found for query '%s'.", search_query)
+        return []
+
+    for item in items:
+        if len(saved_records) >= max_records:
             break
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        title = item.find("title").text if item.find("title") else ""
+        description = item.find("description").text if item.find("description") else ""
         
-        # Locate article cards in Antara News search results
-        cards = soup.find_all(class_="card__post__content")
-        if not cards:
-            logger.info("No more articles found for keyword '%s' at page %s.", sanitized_keyword, page_num)
-            break
+        # Google News RSS source tag contains the original publisher name
+        source_tag = item.find("source")
+        publisher = source_tag.text if source_tag else "Portal Berita"
+        
+        if not title and not description:
+            continue
 
-        page_processed_count = 0
-        for card in cards:
-            if len(saved_records) >= max_records:
-                break
+        # Simple HTML tag strip from description (Google News description has some basic HTML)
+        clean_desc_soup = BeautifulSoup(description, "html.parser")
+        clean_description = clean_desc_soup.get_text(separator=" ", strip=True)
 
-            # Parse title
-            title = ""
-            title_div = card.find(class_="card__post__title")
-            if title_div:
-                a_tag = title_div.find("a")
-                if a_tag:
-                    title = a_tag.text.strip()
-            if not title:
-                # Fallback to direct anchor tag search
-                a_tag = card.find("a")
-                if a_tag:
-                    title = a_tag.text.strip()
+        combined_text = f"{title}. {clean_description}"
 
-            # Parse summary
-            summary = ""
-            p_tag = card.find("p")
-            if p_tag:
-                summary = p_tag.text.strip()
+        try:
+            # AI Engine analysis
+            sentiment_label, confidence = await analyze_sentiment(combined_text)
+            
+            sentiment_mapping = {
+                "positif": "pos",
+                "negatif": "neg",
+                "netral": "netral"
+            }
+            db_sentiment = sentiment_mapping.get(sentiment_label, "netral")
 
-            # Skip if both title and summary are empty
-            if not title and not summary:
-                continue
+            sentiment_record = SentimentData(
+                issue_id=issue.id,
+                teks=combined_text[:2000],  # Truncate to avoid extreme long texts
+                platform=publisher,
+                sentimen=db_sentiment,
+                confidence_score=confidence
+            )
+            
+            db.add(sentiment_record)
+            saved_records.append(sentiment_record)
+            
+        except Exception as e:
+            logger.warning("Failed to analyze sentiment for article '%s': %s", title[:30], e)
+            continue
 
-            # Combine title and summary for rich sentiment context
-            combined_text = f"{title}. {summary}" if title and summary else (title or summary)
-
-            try:
-                # Call the async sentiment analysis function
-                sentiment_label, confidence = await analyze_sentiment(combined_text)
-                
-                # Map the full label back to the database constraint format ('pos', 'neg', 'netral')
-                # DB CheckConstraint: sentimen IN ('pos', 'neg', 'netral')
-                sentiment_mapping = {
-                    "positif": "pos",
-                    "negatif": "neg",
-                    "netral": "netral"
-                }
-                db_sentiment = sentiment_mapping.get(sentiment_label, "netral")
-
-                # Create SentimentData instance
-                sentiment_record = SentimentData(
-                    issue_id=issue.id,
-                    teks=combined_text,
-                    platform="Antara News",
-                    sentimen=db_sentiment,
-                    confidence_score=confidence
-                )
-                
-                # Add to DB session
-                db.add(sentiment_record)
-                saved_records.append(sentiment_record)
-                page_processed_count += 1
-                
-            except Exception as e:
-                # Gracefully handle single article sentiment errors to avoid failing the entire batch
-                logger.warning("Failed to analyze sentiment for article '%s': %s", title[:30], e)
-                continue
-
-        logger.info("Processed %s articles on page %s.", page_processed_count, page_num)
-        page_num += 1
-
-    # 3. Commit the transaction to the database
     if saved_records:
         try:
             db.commit()
-            # Refresh instances to populate auto-generated IDs
             for record in saved_records:
                 db.refresh(record)
             logger.info("Successfully saved %s sentiment records to the database.", len(saved_records))

@@ -1,10 +1,12 @@
 import logging
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
 from sqlalchemy import func, cast, Date
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import text
-from .database import get_db
+from .database import get_db, SessionLocal
 from .models import Issue, SentimentData
 from .scraper import scrape_and_store_sentiment
 
@@ -25,6 +27,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class IssueCreate(BaseModel):
+    nama_isu: str
+    keyword: str
+
+class ScrapeOptions(BaseModel):
+    max_records: int = 50
+    time_filter: str = "7d"
+
+async def run_background_scrape(issue_id: int, options: ScrapeOptions):
+    """
+    Background task to execute scraping with a standalone DB session.
+    """
+    db = SessionLocal()
+    try:
+        issue = db.query(Issue).filter(Issue.id == issue_id, Issue.is_active == True).first()
+        if issue:
+            await scrape_and_store_sentiment(issue.keyword, db, options.max_records, options.time_filter)
+        else:
+            logger.error("Active issue not found in background task for id %s", issue_id)
+    except Exception as e:
+        logger.error("Background scrape failed for issue %s: %s", issue_id, e)
+    finally:
+        db.close()
 
 @app.get("/health", tags=["System"])
 def health_check():
@@ -48,32 +74,89 @@ def db_check(db: Session = Depends(get_db)):
 
 
 @app.get("/issues", tags=["Issues"])
-def get_active_issues(db: Session = Depends(get_db)):
+def get_issues(active_only: bool = False, db: Session = Depends(get_db)):
     """
-    Fetch all active issues from the database.
+    Fetch issues from the database. Optionally filter for active ones.
     """
     try:
-        issues = db.query(Issue).filter(Issue.is_active == True).all()
+        query = db.query(Issue)
+        if active_only:
+            query = query.filter(Issue.is_active == True)
+        issues = query.order_by(Issue.created_at.desc()).all()
+        
+        # Query total records per issue
+        counts = db.query(
+            SentimentData.issue_id,
+            func.count(SentimentData.id).label("count")
+        ).group_by(SentimentData.issue_id).all()
+        counts_map = {c.issue_id: c.count for c in counts}
+        
         return [
             {
                 "id": issue.id,
                 "nama_isu": issue.nama_isu,
                 "keyword": issue.keyword,
                 "created_at": issue.created_at,
-                "is_active": issue.is_active
+                "is_active": issue.is_active,
+                "total_records": counts_map.get(issue.id, 0)
             }
             for issue in issues
         ]
     except Exception as e:
-        logger.error("Error retrieving active issues: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to retrieve active issues.")
+        logger.error("Error retrieving issues: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to retrieve issues.")
+
+
+@app.post("/issues", tags=["Issues"])
+def create_issue(issue_in: IssueCreate, db: Session = Depends(get_db)):
+    """
+    Create a new issue to track.
+    """
+    try:
+        # Check if keyword is empty or whitespace
+        if not issue_in.nama_isu.strip() or not issue_in.keyword.strip():
+            raise HTTPException(status_code=400, detail="Issue name and keyword cannot be empty.")
+            
+        # Check if active issue with this keyword already exists
+        existing = db.query(Issue).filter(
+            Issue.keyword == issue_in.keyword.strip(), 
+            Issue.is_active == True
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="An active issue with this keyword already exists.")
+
+        new_issue = Issue(
+            nama_isu=issue_in.nama_isu.strip(),
+            keyword=issue_in.keyword.strip(),
+            is_active=True
+        )
+        db.add(new_issue)
+        db.commit()
+        db.refresh(new_issue)
+        return {
+            "id": new_issue.id,
+            "nama_isu": new_issue.nama_isu,
+            "keyword": new_issue.keyword,
+            "is_active": new_issue.is_active,
+            "created_at": new_issue.created_at
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error("Error creating new issue: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to create new issue.")
 
 
 @app.post("/trigger-scrape/{issue_id}", tags=["Scraping"])
-async def trigger_scrape(issue_id: int, db: Session = Depends(get_db)):
+async def trigger_scrape(
+    issue_id: int,
+    options: ScrapeOptions,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
     """
-    Trigger scraping for a specific active issue, run sentiment analysis,
-    and store the results in the SentimentData database table.
+    Trigger scraping for a specific active issue in the background.
     """
     # Verify active issue exists
     issue = db.query(Issue).filter(Issue.id == issue_id, Issue.is_active == True).first()
@@ -81,28 +164,16 @@ async def trigger_scrape(issue_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Active issue not found.")
 
     try:
-        # Run scraper and store results
-        records = await scrape_and_store_sentiment(issue.keyword, db)
+        # Dispatch to background task
+        background_tasks.add_task(run_background_scrape, issue_id, options)
         return {
-            "status": "success",
-            "message": f"Successfully scraped and analyzed {len(records)} articles.",
-            "data": [
-                {
-                    "id": record.id,
-                    "teks": record.teks[:100] + "..." if len(record.teks) > 100 else record.teks,
-                    "platform": record.platform,
-                    "sentimen": record.sentimen,
-                    "confidence_score": record.confidence_score
-                }
-                for record in records
-            ]
+            "status": "processing",
+            "message": f"Scraping started in background for issue '{issue.nama_isu}' with limit {options.max_records} and time {options.time_filter}.",
+            "data": []
         }
-    except ValueError as e:
-        logger.error("Scraper validation error for issue %s: %s", issue_id, e)
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error("Unexpected error during scraping for issue %s: %s", issue_id, e)
-        raise HTTPException(status_code=500, detail="Failed to scrape and analyze data.")
+        logger.error("Unexpected error dispatching background task for issue %s: %s", issue_id, e)
+        raise HTTPException(status_code=500, detail="Failed to dispatch background scrape.")
 
 
 @app.get("/analytics/{issue_id}", tags=["Analytics"])
@@ -172,3 +243,27 @@ def get_analytics(issue_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error("Error generating analytics for issue %s: %s", issue_id, e)
         raise HTTPException(status_code=500, detail="Failed to retrieve analytics data.")
+
+
+@app.get("/feed/{issue_id}", tags=["Analytics"])
+def get_feed(issue_id: int, limit: int = 15, db: Session = Depends(get_db)):
+    """
+    Fetch the latest raw sentiment records for a specific issue to show in the live feed.
+    """
+    try:
+        records = db.query(SentimentData).filter(SentimentData.issue_id == issue_id)\
+            .order_by(SentimentData.scraped_at.desc()).limit(limit).all()
+        return [
+            {
+                "id": r.id,
+                "teks": r.teks,
+                "platform": r.platform,
+                "sentimen": r.sentimen,
+                "confidence_score": round(r.confidence_score, 2) if r.confidence_score else 0.0,
+                "scraped_at": r.scraped_at
+            }
+            for r in records
+        ]
+    except Exception as e:
+        logger.error("Error retrieving feed for issue %s: %s", issue_id, e)
+        raise HTTPException(status_code=500, detail="Failed to retrieve feed data.")
