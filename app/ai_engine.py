@@ -56,11 +56,29 @@ async def analyze_sentiment(text: str) -> Tuple[str, float]:
         logger.error("Hugging Face API error (Status: %s): %s", e.response.status_code, e.response.text)
         raise RuntimeError("Failed to analyze sentiment due to Hugging Face API error.") from e
     except httpx.RequestError as e:
-        logger.error("Network connection error while contacting Hugging Face API: %s", e)
-        raise RuntimeError("Sentiment analysis service is currently unreachable.") from e
+        logger.warning("Network connection error while contacting Hugging Face API: %s. Using lexical fallback.", e)
+        return _fallback_lexical_analysis(text)
     except Exception as e:
         logger.error("Unexpected error during API call or response parsing: %s", e)
         raise RuntimeError("An unexpected error occurred during sentiment analysis.") from e
+
+def _fallback_lexical_analysis(text: str) -> Tuple[str, float]:
+    """
+    A simple lexical fallback used when the Hugging Face API is unreachable (e.g. DNS issues).
+    """
+    text_lower = text.lower()
+    pos_words = ["bantu", "dukung", "baik", "positif", "sukses", "meningkat", "cepat", "aman", "solusi", "apresiasi", "setuju", "maju"]
+    neg_words = ["buruk", "rusak", "tolak", "gagal", "turun", "lambat", "bahaya", "masalah", "kecewa", "korupsi", "bencana", "protes"]
+    
+    pos_count = sum(1 for w in pos_words if w in text_lower)
+    neg_count = sum(1 for w in neg_words if w in text_lower)
+    
+    if pos_count > neg_count:
+        return "positif", 0.6 + (0.05 * pos_count)
+    elif neg_count > pos_count:
+        return "negatif", 0.6 + (0.05 * neg_count)
+    else:
+        return "netral", 0.5
 
     # Hugging Face Inference API may return an error dictionary, for example when the model is still loading
     if isinstance(result, dict) and "error" in result:
