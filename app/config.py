@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     # Default is for local development; in production it should be overridden by environment variable
     database_url: str = "postgresql://postgres:postgres@localhost:5432/aceh_sentimen"
     environment: str = "development"
+    hf_token: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
