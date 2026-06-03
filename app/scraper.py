@@ -61,8 +61,9 @@ async def scrape_and_store_sentiment(keyword: str, db: Session) -> List[Sentimen
 
     logger.info("Starting scrape process for keyword '%s' (Issue ID: %s)...", sanitized_keyword, issue.id)
 
-    # Scrape loop, running until we reach 100 records or there are no more pages
-    while len(saved_records) < max_records:
+    # Scrape loop, running until we reach 100 records, there are no more pages, or we exceed page limit
+    max_pages = 10
+    while len(saved_records) < max_records and page_num <= max_pages:
         # Build search URL with query parameters
         params = {
             "q": sanitized_keyword,
