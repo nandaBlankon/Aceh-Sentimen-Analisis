@@ -240,21 +240,12 @@
                             </div>
                         </div>
                         
-                        <div class="space-y-2">
-                            <div class="flex justify-between text-xs font-medium">
-                                <span id="platform-tiktok-pos-text" class="text-emerald-600">Pos 0%</span>
-                                <span id="platform-tiktok-neu-text" class="text-slate-500">Neu 0%</span>
-                                <span id="platform-tiktok-neg-text" class="text-rose-600">Neg 0%</span>
-                            </div>
-                            <div class="w-full h-2.5 bg-slate-100 rounded-full flex overflow-hidden">
-                                <div id="platform-tiktok-pos-bar" class="bg-emerald-500 h-full transition-all duration-1000" style="width: 0%"></div>
-                                <div id="platform-tiktok-neu-bar" class="bg-slate-400 h-full transition-all duration-1000" style="width: 0%"></div>
-                                <div id="platform-tiktok-neg-bar" class="bg-rose-500 h-full transition-all duration-1000" style="width: 0%"></div>
-                            </div>
-                            <p class="text-xs text-slate-500 pt-2 border-t border-slate-100 mt-3 italic">
-                                Alokasi data media sosial berorientasi pada video reaktif masyarakat.
-                            </p>
+                        <div class="mt-2 py-3 px-4 bg-slate-50 rounded-lg border border-slate-100 flex items-center justify-center mb-3">
+                            <span class="text-xs font-medium text-slate-400 italic">Integrasi API dalam tahap pengembangan</span>
                         </div>
+                        <p class="text-xs text-slate-500 pt-2 border-t border-slate-100 mt-auto italic">
+                            Alokasi data media sosial berorientasi pada video reaktif masyarakat.
+                        </p>
                     </div>
 
                     <!-- Platform: Meta (FB/IG) -->
@@ -274,21 +265,12 @@
                             </div>
                         </div>
                         
-                        <div class="space-y-2">
-                            <div class="flex justify-between text-xs font-medium">
-                                <span id="platform-meta-pos-text" class="text-emerald-600">Pos 0%</span>
-                                <span id="platform-meta-neu-text" class="text-slate-500">Neu 0%</span>
-                                <span id="platform-meta-neg-text" class="text-rose-600">Neg 0%</span>
-                            </div>
-                            <div class="w-full h-2.5 bg-slate-100 rounded-full flex overflow-hidden">
-                                <div id="platform-meta-pos-bar" class="bg-emerald-500 h-full transition-all duration-1000" style="width: 0%"></div>
-                                <div id="platform-meta-neu-bar" class="bg-slate-400 h-full transition-all duration-1000" style="width: 0%"></div>
-                                <div id="platform-meta-neg-bar" class="bg-rose-500 h-full transition-all duration-1000" style="width: 0%"></div>
-                            </div>
-                            <p class="text-xs text-slate-500 pt-2 border-t border-slate-100 mt-3 italic">
-                                Alokasi data grup publik, postingan komunitas lokal Facebook & Instagram.
-                            </p>
+                        <div class="mt-2 py-3 px-4 bg-slate-50 rounded-lg border border-slate-100 flex items-center justify-center mb-3">
+                            <span class="text-xs font-medium text-slate-400 italic">Integrasi API dalam tahap pengembangan</span>
                         </div>
+                        <p class="text-xs text-slate-500 pt-2 border-t border-slate-100 mt-auto italic">
+                            Alokasi data grup publik, postingan komunitas lokal Facebook & Instagram.
+                        </p>
                     </div>
                 </div>
 
@@ -788,8 +770,6 @@
                 };
                 
                 updateProgressBar("platform-berita", dist);
-                updateProgressBar("platform-tiktok", dist);
-                updateProgressBar("platform-meta", dist);
                 
                 // Update Line Chart
                 updateChart(data.time_series);
