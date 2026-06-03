@@ -202,14 +202,9 @@ def get_analytics(issue_id: int, db: Session = Depends(get_db)):
             func.count(SentimentData.id).label("count")
         ).filter(SentimentData.issue_id == issue_id).group_by(SentimentData.sentimen).all()
 
-        # 3. Daily time-series counts
-        daily_counts = db.query(
-            cast(SentimentData.scraped_at, Date).label("date_only"),
-            SentimentData.sentimen,
-            func.count(SentimentData.id).label("count")
-        ).filter(SentimentData.issue_id == issue_id)\
-         .group_by("date_only", SentimentData.sentimen)\
-         .order_by("date_only").all()
+        # 3. Daily time-series counts (Aggregated in Python to avoid SQLite date cast issues)
+        raw_records = db.query(SentimentData.scraped_at, SentimentData.sentimen)\
+                        .filter(SentimentData.issue_id == issue_id).all()
 
         # Transform database queries into clean response structures
         total_by_platform = {r.platform: r.count for r in platform_counts}
@@ -225,13 +220,17 @@ def get_analytics(issue_id: int, db: Session = Depends(get_db)):
 
         # Build Daily Time-Series data
         time_series_map = {}
-        for r in daily_counts:
-            date_str = r.date_only.strftime("%Y-%m-%d") if r.date_only else "unknown"
+        for r in raw_records:
+            if not r.scraped_at:
+                continue
+            date_str = r.scraped_at.strftime("%Y-%m-%d")
             if date_str not in time_series_map:
                 time_series_map[date_str] = {"date": date_str, "pos": 0, "neg": 0, "netral": 0}
-            time_series_map[date_str][r.sentimen] = r.count
+            if r.sentimen in time_series_map[date_str]:
+                time_series_map[date_str][r.sentimen] += 1
 
         time_series = list(time_series_map.values())
+        time_series.sort(key=lambda x: x["date"])
 
         return {
             "issue_id": issue_id,
