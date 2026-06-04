@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import text
 from .database import get_db, SessionLocal
 from .models import Issue, SentimentData
-from .scraper import scrape_and_store_sentiment
+from .scraper import scrape_and_store_sentiment, scrape_tiktok_comments
 
 logger = logging.getLogger("app.main")
 
@@ -44,13 +44,26 @@ async def run_background_scrape(issue_id: int, options: ScrapeOptions):
     try:
         issue = db.query(Issue).filter(Issue.id == issue_id, Issue.is_active == True).first()
         if issue:
-            await scrape_and_store_sentiment(issue.keyword, db, options.max_records, options.time_filter)
+            # 1. Scrape Google News
+            try:
+                logger.info("Starting Google News scraping for issue %s", issue.nama_isu)
+                await scrape_and_store_sentiment(issue.keyword, db, options.max_records, options.time_filter)
+            except Exception as news_err:
+                logger.error("Google News scraping failed for issue %s: %s", issue_id, news_err)
+
+            # 2. Scrape TikTok comments
+            try:
+                logger.info("Starting TikTok comments scraping for issue %s", issue.nama_isu)
+                await scrape_tiktok_comments(issue.keyword, db, options.max_records)
+            except Exception as tiktok_err:
+                logger.error("TikTok comments scraping failed for issue %s: %s", issue_id, tiktok_err)
         else:
             logger.error("Active issue not found in background task for id %s", issue_id)
     except Exception as e:
         logger.error("Background scrape failed for issue %s: %s", issue_id, e)
     finally:
         db.close()
+
 
 @app.get("/health", tags=["System"])
 def health_check():
@@ -202,6 +215,13 @@ def get_analytics(issue_id: int, db: Session = Depends(get_db)):
             func.count(SentimentData.id).label("count")
         ).filter(SentimentData.issue_id == issue_id).group_by(SentimentData.sentimen).all()
 
+        # 2b. Platform-specific sentiment counts
+        plat_sent_counts = db.query(
+            SentimentData.platform,
+            SentimentData.sentimen,
+            func.count(SentimentData.id).label("count")
+        ).filter(SentimentData.issue_id == issue_id).group_by(SentimentData.platform, SentimentData.sentimen).all()
+
         # 3. Daily time-series counts (Aggregated in Python to avoid SQLite date cast issues)
         raw_records = db.query(SentimentData.scraped_at, SentimentData.sentimen)\
                         .filter(SentimentData.issue_id == issue_id).all()
@@ -217,6 +237,16 @@ def get_analytics(issue_id: int, db: Session = Depends(get_db)):
             count = counts_dict.get(key, 0)
             pct = (count / total_sentiment_count * 100) if total_sentiment_count > 0 else 0.0
             sentiment_distribution[key] = round(pct, 2)
+
+        # Build platform sentiment counts dict
+        platform_sentiment_counts = {}
+        for r in plat_sent_counts:
+            plat = r.platform
+            sent = r.sentimen
+            cnt = r.count
+            if plat not in platform_sentiment_counts:
+                platform_sentiment_counts[plat] = {"pos": 0, "neg": 0, "netral": 0}
+            platform_sentiment_counts[plat][sent] = cnt
 
         # Build Daily Time-Series data
         time_series_map = {}
@@ -237,8 +267,10 @@ def get_analytics(issue_id: int, db: Session = Depends(get_db)):
             "nama_isu": issue.nama_isu,
             "total_by_platform": total_by_platform,
             "sentiment_distribution": sentiment_distribution,
+            "platform_sentiment_counts": platform_sentiment_counts,
             "time_series": time_series
         }
+
     except Exception as e:
         logger.error("Error generating analytics for issue %s: %s", issue_id, e)
         raise HTTPException(status_code=500, detail="Failed to retrieve analytics data.")

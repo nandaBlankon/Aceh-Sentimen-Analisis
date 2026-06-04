@@ -141,3 +141,155 @@ async def scrape_and_store_sentiment(
             raise RuntimeError("Failed to persist scraped sentiment records in the database.") from e
             
     return saved_records
+
+
+async def scrape_tiktok_comments(
+    keyword: str,
+    db: Session,
+    max_records: int = 50
+) -> List[SentimentData]:
+    """
+    Scrapes TikTok comments related to the given keyword using RapidAPI tiktok-api23,
+    classifies their sentiments using IndoBERT, and stores them in database.
+    """
+    if not settings.rapidapi_tiktok_key:
+        raise ValueError("Konfigurasi RAPIDAPI_TIKTOK_KEY belum diatur di file .env. Fitur TikTok memerlukan API Key.")
+
+    sanitized_keyword = keyword.strip()
+    if not sanitized_keyword:
+        raise ValueError("Keyword cannot consist only of whitespace.")
+
+    # Find the issue
+    issue = db.query(Issue).filter(Issue.keyword == sanitized_keyword, Issue.is_active == True).first()
+    if not issue:
+        issue = db.query(Issue).filter(
+            (Issue.keyword.ilike(f"%{sanitized_keyword}%") | Issue.nama_isu.ilike(f"%{sanitized_keyword}%")),
+            Issue.is_active == True
+        ).first()
+
+    if not issue:
+        logger.error("Failed to find any active issue in database matching keyword: '%s'", sanitized_keyword)
+        raise ValueError(f"No active issue found in the database for keyword: '{sanitized_keyword}'")
+
+    headers = {
+        "x-rapidapi-key": settings.rapidapi_tiktok_key,
+        "x-rapidapi-host": "tiktok-api23.p.rapidapi.com"
+    }
+
+    logger.info("Starting TikTok search for query '%s'...", sanitized_keyword)
+    saved_records: List[SentimentData] = []
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # 1. Search for posts/videos
+            search_url = "https://tiktok-api23.p.rapidapi.com/api/search/video"
+            search_params = {"keyword": sanitized_keyword, "count": "10", "cursor": "0"}
+            response = await client.get(search_url, headers=headers, params=search_params)
+            response.raise_for_status()
+            search_data = response.json()
+            
+            videos = []
+            if isinstance(search_data, dict):
+                if search_data.get("status") == "failed":
+                    logger.error("TikTok API returned failed status: %s", search_data.get("msg"))
+                    return []
+                
+                data_section = search_data.get("data") or search_data
+                if isinstance(data_section, dict):
+                    videos = data_section.get("videos") or data_section.get("items") or data_section.get("posts") or data_section.get("item_list") or data_section.get("itemList") or []
+                elif isinstance(data_section, list):
+                    videos = data_section
+            
+            if not videos:
+
+                logger.info("No TikTok videos found for keyword '%s'. Response: %s", sanitized_keyword, search_data)
+                return []
+
+            logger.info("Found %d TikTok videos, retrieving comments...", len(videos))
+
+            # 2. Iterate videos and get comments
+            for video in videos:
+
+                if len(saved_records) >= max_records:
+                    break
+
+                video_id = None
+                if isinstance(video, dict):
+                    video_id = video.get("video_id") or video.get("aweme_id") or video.get("id")
+                
+                if not video_id:
+                    continue
+
+                comments_url = "https://tiktok-api23.p.rapidapi.com/api/post/comments"
+                comments_params = {"videoId": str(video_id), "count": "20", "cursor": "0"}
+                
+                try:
+                    comments_resp = await client.get(comments_url, headers=headers, params=comments_params)
+                    comments_resp.raise_for_status()
+                    comments_data = comments_resp.json()
+                    
+                    comments = []
+                    if isinstance(comments_data, dict):
+                        data_section = comments_data.get("data") or comments_data
+                        if isinstance(data_section, dict):
+                            comments = data_section.get("comments") or data_section.get("items") or []
+                        elif isinstance(data_section, list):
+                            comments = data_section
+                    
+                    if not comments:
+                        continue
+
+                    for comment in comments:
+                        if len(saved_records) >= max_records:
+                            break
+
+                        comment_text = None
+                        if isinstance(comment, dict):
+                            comment_text = comment.get("text") or comment.get("comment_text") or comment.get("desc")
+                        
+                        if not comment_text or not comment_text.strip():
+                            continue
+
+                        # Analyze sentiment
+                        sentiment_label, confidence = await analyze_sentiment(comment_text)
+                        
+                        sentiment_mapping = {
+                            "positif": "pos",
+                            "negatif": "neg",
+                            "netral": "netral"
+                        }
+                        db_sentiment = sentiment_mapping.get(sentiment_label, "netral")
+
+                        sentiment_record = SentimentData(
+                            issue_id=issue.id,
+                            teks=comment_text[:2000],
+                            platform=f"TikTok (Video: {video_id})",
+                            sentimen=db_sentiment,
+                            confidence_score=confidence
+                        )
+                        db.add(sentiment_record)
+                        saved_records.append(sentiment_record)
+
+                except Exception as e:
+                    logger.warning("Failed to retrieve or process comments for video %s: %s", video_id, e)
+                    continue
+
+
+
+        if saved_records:
+            try:
+                db.commit()
+                for record in saved_records:
+                    db.refresh(record)
+                logger.info("Successfully saved %s TikTok comments to database.", len(saved_records))
+            except Exception as e:
+                db.rollback()
+                logger.error("Failed to commit TikTok comments: %s", e)
+                raise RuntimeError("Failed to persist scraped TikTok comments.") from e
+
+    except Exception as e:
+        logger.error("Failed to complete TikTok comments scraping: %s", e)
+        raise e
+
+    return saved_records
+

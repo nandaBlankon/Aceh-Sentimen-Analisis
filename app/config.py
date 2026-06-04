@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://postgres:postgres@localhost:5432/aceh_sentimen"
     environment: str = "development"
     hf_token: str = ""
+    rapidapi_tiktok_key: str = ""
+
 
     model_config = SettingsConfigDict(
         env_file=".env",
