@@ -185,6 +185,117 @@
                     </div>
                 </div>
 
+                <!-- AI Executive Summary Card -->
+                <div id="ai-summary-container" class="bg-white/80 backdrop-blur-md p-6 rounded-2xl border border-slate-200 shadow-sm mb-6 relative overflow-hidden transition-all duration-300 hover:shadow-md">
+                    <!-- Premium Gradient Accent Bar -->
+                    <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500"></div>
+                    
+                    <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-6">
+                        <div>
+                            <div class="flex items-center gap-2 mb-1">
+                                <span class="flex h-2 w-2 relative">
+                                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                                    <span class="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                                </span>
+                                <span class="text-xs font-semibold text-indigo-600 uppercase tracking-wider">AI Analysis Engine</span>
+                            </div>
+                            <h3 class="text-lg font-bold text-slate-800 flex items-center gap-1.5">
+                                Ringkasan Eksekutif AI
+                                <i class="ph ph-info text-slate-400 hover:text-slate-600 cursor-help text-sm" title="Ringkasan eksekutif otomatis yang diproduksi oleh Google Gemini 2.5 Flash dengan mengekstraksi poin-poin penting dari portal berita lokal dan sentimen publik di TikTok."></i>
+                            </h3>
+                            <p class="text-xs text-slate-500">Ringkasan data taktis & rekomendasi kebijakan untuk pimpinan daerah</p>
+                        </div>
+                        
+                        <!-- Actions & Badges -->
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span id="ai-summary-badge" class="px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                                Memuat...
+                            </span>
+                            <button id="btn-regenerate-summary" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 active:bg-indigo-100 border border-indigo-200 rounded-lg transition-all">
+                                <i class="ph ph-arrows-counter-clockwise"></i>
+                                Analisis Ulang
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Skeleton Loading State (Shimmering) -->
+                    <div id="ai-summary-skeleton" class="space-y-4 animate-pulse">
+                        <div class="h-4 bg-slate-200 rounded w-2/3"></div>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div class="space-y-2">
+                                <div class="h-3 bg-slate-200 rounded w-1/2"></div>
+                                <div class="h-3 bg-slate-200 rounded w-full"></div>
+                                <div class="h-3 bg-slate-200 rounded w-full"></div>
+                            </div>
+                            <div class="space-y-2">
+                                <div class="h-3 bg-slate-200 rounded w-1/3"></div>
+                                <div class="h-3 bg-slate-200 rounded w-full"></div>
+                                <div class="h-3 bg-slate-200 rounded w-full"></div>
+                            </div>
+                            <div class="space-y-2">
+                                <div class="h-3 bg-slate-200 rounded w-2/3"></div>
+                                <div class="h-3 bg-slate-200 rounded w-full"></div>
+                                <div class="h-3 bg-slate-200 rounded w-5/6"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Empty State -->
+                    <div id="ai-summary-empty" class="hidden text-center py-6">
+                        <div class="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3 text-2xl">
+                            <i class="ph ph-warning-circle"></i>
+                        </div>
+                        <p class="text-sm font-medium text-slate-700 mb-1" id="ai-summary-empty-msg">Data sentimen belum cukup dikumpulkan untuk membuat ringkasan eksekutif.</p>
+                        <p class="text-xs text-slate-500">Klik tombol 'Sinkronisasi Data' untuk mulai mengumpulkan data portal berita dan TikTok.</p>
+                    </div>
+
+                    <!-- Actual Content State -->
+                    <div id="ai-summary-content" class="hidden space-y-6">
+                        <!-- Ringkasan Umum Section -->
+                        <div class="bg-indigo-50/50 p-4 rounded-xl border border-indigo-100/60">
+                            <h4 class="font-bold text-indigo-900 text-sm flex items-center gap-1.5 mb-2">
+                                <i class="ph ph-article text-indigo-600 text-lg"></i>
+                                Ringkasan Umum Isu
+                                <i class="ph ph-info text-indigo-400 hover:text-indigo-600 cursor-help text-xs" title="Analisis ringkas dan komprehensif mengenai kondisi terkini, respon publik, dan dampak utama dari isu ini secara keseluruhan."></i>
+                            </h4>
+                            <p id="ai-ringkasan-umum" class="text-sm text-slate-700 leading-relaxed"></p>
+                        </div>
+                        
+                        <!-- News & TikTok Grid -->
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <!-- News Analysis Card -->
+                            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200/60">
+                                <h4 class="font-bold text-slate-800 text-sm flex items-center gap-1.5 mb-3">
+                                    <i class="ph ph-newspaper text-slate-600 text-lg"></i>
+                                    Analisis Sentimen Portal Berita
+                                    <i class="ph ph-info text-slate-400 hover:text-slate-600 cursor-help text-xs" title="Poin penting dan sentimen umum yang diangkat oleh portal berita lokal (seperti Serambi Indonesia, Aceh Tribunnews, dll) dan nasional."></i>
+                                </h4>
+                                <p id="ai-analisis-berita" class="text-sm text-slate-700 leading-relaxed"></p>
+                            </div>
+                            
+                            <!-- TikTok Analysis Card -->
+                            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200/60">
+                                <h4 class="font-bold text-slate-800 text-sm flex items-center gap-1.5 mb-3">
+                                    <i class="ph ph-tiktok-logo text-slate-600 text-lg"></i>
+                                    Analisis Komentar Warganet (TikTok)
+                                    <i class="ph ph-info text-slate-400 hover:text-slate-600 cursor-help text-xs" title="Keluhan utama, kritikan, apresiasi, serta harapan yang disuarakan oleh masyarakat Aceh secara langsung melalui komentar di video TikTok."></i>
+                                </h4>
+                                <p id="ai-analisis-tiktok" class="text-sm text-slate-700 leading-relaxed"></p>
+                            </div>
+                        </div>
+
+                        <!-- Recommendations Card -->
+                        <div class="bg-emerald-50/50 p-4 rounded-xl border border-emerald-100/60">
+                            <h4 class="font-bold text-emerald-900 text-sm flex items-center gap-1.5 mb-3">
+                                <i class="ph ph-lightbulb text-emerald-600 text-lg animate-pulse"></i>
+                                Rekomendasi Kebijakan Taktis & Strategis
+                                <i class="ph ph-info text-emerald-400 hover:text-emerald-600 cursor-help text-xs" title="Langkah konkret, strategis, dan taktis yang dapat diambil oleh pimpinan daerah / pejabat terkait untuk merespon dinamika opini di lapangan."></i>
+                            </h4>
+                            <div id="ai-rekomendasi" class="text-sm text-slate-700 leading-relaxed space-y-1"></div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Platform Breakdown section -->
                 <h3 class="font-semibold text-slate-800 mb-4 text-sm uppercase tracking-wider">Komparasi Per Platform</h3>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
@@ -745,6 +856,9 @@
                 loadAnalytics(issueId),
                 loadFeed(issueId)
             ]);
+
+            // Load the AI executive summary
+            loadAISummary(issueId);
         }
 
         async function loadAnalytics(issueId) {
@@ -931,6 +1045,90 @@
             }
         }
 
+        async function loadAISummary(issueId) {
+            if (!issueId) return;
+            
+            const container = document.getElementById("ai-summary-container");
+            const skeleton = document.getElementById("ai-summary-skeleton");
+            const emptyState = document.getElementById("ai-summary-empty");
+            const content = document.getElementById("ai-summary-content");
+            const badge = document.getElementById("ai-summary-badge");
+            
+            // Show loading skeleton, hide content and empty states
+            skeleton.classList.remove("hidden");
+            emptyState.classList.add("hidden");
+            content.classList.add("hidden");
+            badge.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200 animate-pulse";
+            badge.textContent = "Menganalisis...";
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/analytics/${issueId}/summary`);
+                if (!response.ok) {
+                    throw new Error("Gagal memanggil API Ringkasan AI");
+                }
+                
+                const data = await response.json();
+                
+                // Hide loading skeleton
+                skeleton.classList.add("hidden");
+                
+                if (data.status === "empty") {
+                    document.getElementById("ai-summary-empty-msg").textContent = data.message;
+                    emptyState.classList.remove("hidden");
+                    badge.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-amber-50 text-amber-600 border border-amber-200";
+                    badge.textContent = "Data Kosong";
+                } else {
+                    // Populate content
+                    document.getElementById("ai-ringkasan-umum").textContent = data.ringkasan_umum;
+                    document.getElementById("ai-analisis-berita").textContent = data.analisis_berita;
+                    document.getElementById("ai-analisis-tiktok").textContent = data.analisis_tiktok;
+                    
+                    // Render recommendations with a beautiful checklist list style
+                    const recContainer = document.getElementById("ai-rekomendasi");
+                    recContainer.replaceChildren();
+                    
+                    const recLines = data.rekomendasi.split('\n');
+                    recLines.forEach(line => {
+                        const cleanLine = line.replace(/^\d+[\.\)]\s*/, '').trim();
+                        if (cleanLine) {
+                            const recItem = document.createElement("div");
+                            recItem.className = "flex items-start gap-2.5 py-1.5 border-b border-emerald-100/30 last:border-0";
+                            
+                            const icon = document.createElement("i");
+                            icon.className = "ph ph-check-circle text-emerald-600 text-base mt-0.5 shrink-0";
+                            
+                            const text = document.createElement("p");
+                            text.className = "text-slate-700 leading-relaxed text-sm";
+                            text.textContent = cleanLine;
+                            
+                            recItem.appendChild(icon);
+                            recItem.appendChild(text);
+                            recContainer.appendChild(recItem);
+                        }
+                    });
+                    
+                    content.classList.remove("hidden");
+                    
+                    if (data.status === "fallback") {
+                        badge.className = "px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1.5 cursor-help";
+                        badge.innerHTML = `<i class="ph ph-warning"></i> Analisis Lokal (Kuota Penuh)`;
+                        badge.title = "Kuota limit API Google Gemini Anda telah habis hari ini. Sistem beralih ke analisis sentimen lokal sebagai cadangan.";
+                    } else {
+                        badge.className = "px-2.5 py-1 rounded-md text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1.5";
+                        badge.innerHTML = `<i class="ph ph-sparkle text-indigo-500"></i> AI Gemini Aktif`;
+                        badge.title = "Analisis eksekutif ini sepenuhnya dihasilkan menggunakan kecerdasan buatan Google Gemini 2.5 Flash.";
+                    }
+                }
+            } catch (error) {
+                console.error(error);
+                skeleton.classList.add("hidden");
+                document.getElementById("ai-summary-empty-msg").textContent = "Gagal memproses Ringkasan AI untuk isu ini.";
+                emptyState.classList.remove("hidden");
+                badge.className = "px-2.5 py-1 rounded-md text-xs font-medium bg-red-50 text-red-600 border border-red-200";
+                badge.textContent = "Error";
+            }
+        }
+
         async function loadIssuesTable() {
             try {
                 const response = await fetch(`${API_BASE_URL}/issues?active_only=false`);
@@ -1020,6 +1218,17 @@
         // Dropdown selection change
         document.getElementById("issue-select").addEventListener("change", (e) => {
             handleIssueChange(e.target.value);
+        });
+
+        // Regenerate AI Summary button click
+        document.getElementById("btn-regenerate-summary").addEventListener("click", () => {
+            const select = document.getElementById("issue-select");
+            const issueId = select.value;
+            if (issueId) {
+                loadAISummary(issueId);
+            } else {
+                showToast("Pilih isu aktif terlebih dahulu untuk melakukan analisis ulang.", true);
+            }
         });
 
         // Trigger Scrape Button click

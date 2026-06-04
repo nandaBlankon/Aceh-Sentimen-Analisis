@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import Tuple
@@ -6,13 +7,10 @@ from .config import settings
 
 logger = logging.getLogger("app.ai_engine")
 
-# Hugging Face Inference API URL for the indobert-base-p2 model
-API_URL = "https://api-inference.huggingface.co/models/indobenchmark/indobert-base-p2"
-
 async def analyze_sentiment(text: str) -> Tuple[str, float]:
     """
-    Asynchronously analyze the sentiment of a given text using the Hugging Face Inference API
-    with the 'indobenchmark/indobert-base-p2' model.
+    Asynchronously analyze the sentiment of a given text using Google Gemini 2.5 Flash API
+    with direct REST HTTP request.
 
     Args:
         text (str): The input text to analyze.
@@ -20,51 +18,97 @@ async def analyze_sentiment(text: str) -> Tuple[str, float]:
     Returns:
         Tuple[str, float]: A tuple containing the sentiment label ('positif', 'negatif', or 'netral')
                            and the confidence score (float).
-
-    Raises:
-        ValueError: If configuration is invalid or the model output is malformed.
-        RuntimeError: If the API request fails or the model is loading.
     """
-    # Retrieve HF_TOKEN securely from settings (or directly from environment if settings is not set/overridden)
-    hf_token = settings.hf_token or os.environ.get("HF_TOKEN")
+    gemini_api_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY")
     
-    # Secure validation: Check if HF_TOKEN is configured.
-    # Do NOT fall back to default or hardcoded credential values.
-    if not hf_token:
-        # TODO(security): Raise configuration error if secret is missing to prevent silent fallback or insecure defaults
-        logger.error("Hugging Face API token (HF_TOKEN) is not set in environment or config.")
-        raise ValueError("HF_TOKEN environment variable is not configured.")
+    if not gemini_api_key:
+        logger.error("Gemini API key (GEMINI_API_KEY) is not set in environment or config. Using lexical fallback.")
+        return _fallback_lexical_analysis(text)
+
+    # Gemini REST API URL (using gemini-2.5-flash)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
+    
+    prompt = (
+        "Anda adalah analis sentimen ahli dalam bahasa Indonesia dan dialek daerah (seperti bahasa Aceh/Gayo). "
+        "Tentukan sentimen dari teks berikut apakah positif (pos), negatif (neg), atau netral. "
+        "Perhatikan konteks sarkasme, sindiran, dialek lokal, dan singkatan khas media sosial.\n\n"
+        f"Teks: {text}"
+    )
+
+    payload = {
+        "contents": [{
+            "parts": [{
+                "text": prompt
+            }]
+        }],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "OBJECT",
+                "properties": {
+                    "sentimen": {
+                        "type": "STRING",
+                        "enum": ["pos", "neg", "netral"]
+                    },
+                    "confidence": {
+                        "type": "NUMBER"
+                    }
+                },
+                "required": ["sentimen", "confidence"]
+            }
+        }
+    }
 
     headers = {
-        "Authorization": f"Bearer {hf_token}",
         "Content-Type": "application/json"
-    }
-    payload = {
-        "inputs": text
     }
 
     try:
-        # Use httpx.AsyncClient to perform the asynchronous POST request
-        # Explicit timeout configured to prevent request hanging indefinitely
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(API_URL, json=payload, headers=headers)
-            
-            # Secure error handling: raise for HTTP status errors but log details privately, returning a generic error
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             result = response.json()
+            
+            # Parse the structured JSON output from Gemini response
+            candidates = result.get("candidates", [])
+            if not candidates:
+                logger.warning("No candidates found in Gemini API response. Using lexical fallback.")
+                return _fallback_lexical_analysis(text)
+                
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if not parts:
+                logger.warning("No parts found in Gemini API candidate. Using lexical fallback.")
+                return _fallback_lexical_analysis(text)
+                
+            text_response = parts[0].get("text", "").strip()
+            data = json.loads(text_response)
+            
+            sentimen = data.get("sentimen", "netral")
+            confidence = float(data.get("confidence", 0.8))
+            
+            # Map labels to the output values ('positif', 'negatif', 'netral') expected by the caller
+            label_map = {
+                "pos": "positif",
+                "neg": "negatif",
+                "netral": "netral"
+            }
+            sentiment_label = label_map.get(sentimen, "netral")
+            
+            return sentiment_label, confidence
+
     except httpx.HTTPStatusError as e:
-        logger.error("Hugging Face API error (Status: %s): %s", e.response.status_code, e.response.text)
-        raise RuntimeError("Failed to analyze sentiment due to Hugging Face API error.") from e
+        logger.error("Gemini API returned status code %s: %s", e.response.status_code, e.response.text)
+        return _fallback_lexical_analysis(text)
     except httpx.RequestError as e:
-        logger.warning("Network connection error while contacting Hugging Face API: %s. Using lexical fallback.", e)
+        logger.warning("Network connection error while contacting Gemini API: %s. Using lexical fallback.", e)
         return _fallback_lexical_analysis(text)
     except Exception as e:
-        logger.error("Unexpected error during API call or response parsing: %s", e)
-        raise RuntimeError("An unexpected error occurred during sentiment analysis.") from e
+        logger.error("Unexpected error parsing Gemini response: %s. Using lexical fallback.", e)
+        return _fallback_lexical_analysis(text)
 
 def _fallback_lexical_analysis(text: str) -> Tuple[str, float]:
     """
-    A simple lexical fallback used when the Hugging Face API is unreachable (e.g. DNS issues).
+    A simple lexical fallback used when the Gemini API is unreachable or fails.
     """
     text_lower = text.lower()
     pos_words = ["bantu", "dukung", "baik", "positif", "sukses", "meningkat", "cepat", "aman", "solusi", "apresiasi", "setuju", "maju"]
@@ -79,72 +123,3 @@ def _fallback_lexical_analysis(text: str) -> Tuple[str, float]:
         return "negatif", 0.6 + (0.05 * neg_count)
     else:
         return "netral", 0.5
-
-    # Hugging Face Inference API may return an error dictionary, for example when the model is still loading
-    if isinstance(result, dict) and "error" in result:
-        error_msg = result.get("error", "Unknown API error")
-        estimated_time = result.get("estimated_time", "unknown")
-        logger.error("Hugging Face API returned error: %s (estimated loading time: %s)", error_msg, estimated_time)
-        raise RuntimeError(f"Hugging Face model is not ready: {error_msg}")
-
-    # Typical Hugging Face sequence classification response structure is:
-    # [[{"label": "LABEL_0", "score": 0.8}, {"label": "LABEL_1", "score": 0.15}, ...]]
-    # or sometimes just:
-    # [{"label": "LABEL_0", "score": 0.8}, ...]
-    predictions = None
-    if isinstance(result, list):
-        if len(result) > 0 and isinstance(result[0], list):
-            predictions = result[0]
-        else:
-            predictions = result
-
-    if not predictions or not isinstance(predictions, list):
-        logger.error("Invalid or unexpected response structure from Hugging Face API: %s", result)
-        raise ValueError("Received invalid response structure from sentiment analysis service.")
-
-    # Find the prediction with the highest confidence score
-    best_prediction = None
-    for pred in predictions:
-        if not isinstance(pred, dict) or "label" not in pred or "score" not in pred:
-            continue
-        if best_prediction is None or pred["score"] > best_prediction["score"]:
-            best_prediction = pred
-
-    if not best_prediction:
-        logger.error("No valid predictions with label and score found in HF response: %s", predictions)
-        raise ValueError("Sentiment analysis model did not return any valid predictions.")
-
-    raw_label = best_prediction["label"]
-    confidence_score = float(best_prediction["score"])
-
-    # Map the model's raw label to the required: 'positif', 'negatif', 'netral'
-    # We support typical fine-tuning label patterns:
-    # - LABEL_0, LABEL_1, LABEL_2 for standard IndoNLU / IndoBERT classification datasets
-    # - English classification words (positive, negative, neutral)
-    # - Common variations (pos, neg, neu, net)
-    label_map = {
-        "LABEL_0": "negatif",
-        "LABEL_1": "netral",
-        "LABEL_2": "positif",
-        "POSITIVE": "positif",
-        "NEGATIVE": "negatif",
-        "NEUTRAL": "netral",
-        "POS": "positif",
-        "NEG": "negatif",
-        "NEU": "netral",
-        "NET": "netral",
-        "POSITIF": "positif",
-        "NEGATIF": "negatif",
-        "NETRAL": "netral"
-    }
-
-    # Match normalized label (uppercase, stripped)
-    normalized_label = str(raw_label).strip().upper()
-    sentiment_label = label_map.get(normalized_label)
-
-    if not sentiment_label:
-        # Secure warning for developer debugging while maintaining graceful fallback to netral
-        logger.warning("Unrecognized raw sentiment label from model: '%s'. Defaulting to 'netral'.", raw_label)
-        sentiment_label = "netral"
-
-    return sentiment_label, confidence_score

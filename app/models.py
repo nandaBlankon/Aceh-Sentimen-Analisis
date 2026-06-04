@@ -12,6 +12,8 @@ class Issue(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     nama_isu: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     keyword: Mapped[str] = mapped_column(String(500), nullable=False)
+    wilayah: Mapped[str] = mapped_column(String(100), default="Aceh (Keseluruhan)", nullable=False)
+    keyword_regional: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

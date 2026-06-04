@@ -45,9 +45,40 @@ async def scrape_and_store_sentiment(
 
     # Construct the search query
     # Google News allows search operators like "when:7d" (7 days) or "when:1d" (24 hours)
-    search_query = sanitized_keyword
+    # Split the main keywords by comma and wrap each in quotes if they contain spaces
+    keywords = [k.strip() for k in issue.keyword.split(",") if k.strip()]
+    core_terms = []
+    for kw in keywords:
+        if " " in kw:
+            core_terms.append(f'"{kw}"')
+        else:
+            core_terms.append(kw)
+            
+    if core_terms:
+        core_query_part = " OR ".join(core_terms)
+    else:
+        core_query_part = f'"{issue.keyword}"'
+
+    regional_terms = []
+    
+    if issue.wilayah and issue.wilayah != "Aceh (Keseluruhan)":
+        clean_wilayah = issue.wilayah.replace("Kabupaten ", "").replace("Kota ", "")
+        regional_terms.append(f'"{clean_wilayah}"')
+        
+    if issue.keyword_regional:
+        for kw in issue.keyword_regional.split(','):
+            cleaned_kw = kw.strip()
+            if cleaned_kw:
+                regional_terms.append(f'"{cleaned_kw}"')
+                
+    if regional_terms:
+        regional_query_part = " OR ".join(regional_terms)
+        search_query = f'({core_query_part}) AND ({regional_query_part})'
+    else:
+        search_query = f'({core_query_part}) AND "Aceh"'
+        
     if time_filter and time_filter != "all":
-        search_query = f"{sanitized_keyword} when:{time_filter}"
+        search_query = f"{search_query} when:{time_filter}"
 
     params = {
         "q": search_query,
@@ -176,36 +207,63 @@ async def scrape_tiktok_comments(
         "x-rapidapi-host": "tiktok-api23.p.rapidapi.com"
     }
 
-    logger.info("Starting TikTok search for query '%s'...", sanitized_keyword)
+    # For TikTok, we split the keywords by comma and run searches in a loop to collect unique videos
+    keywords = [k.strip() for k in issue.keyword.split(",") if k.strip()]
+    if not keywords:
+        keywords = [issue.keyword.strip()]
+
+    videos = []
     saved_records: List[SentimentData] = []
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # 1. Search for posts/videos
-            search_url = "https://tiktok-api23.p.rapidapi.com/api/search/video"
-            search_params = {"keyword": sanitized_keyword, "count": "10", "cursor": "0"}
-            response = await client.get(search_url, headers=headers, params=search_params)
-            response.raise_for_status()
-            search_data = response.json()
-            
-            videos = []
-            if isinstance(search_data, dict):
-                if search_data.get("status") == "failed":
-                    logger.error("TikTok API returned failed status: %s", search_data.get("msg"))
-                    return []
-                
-                data_section = search_data.get("data") or search_data
-                if isinstance(data_section, dict):
-                    videos = data_section.get("videos") or data_section.get("items") or data_section.get("posts") or data_section.get("item_list") or data_section.get("itemList") or []
-                elif isinstance(data_section, list):
-                    videos = data_section
+            # Loop through the first 3 keywords to search for videos
+            for kw in keywords[:3]:
+                tiktok_search_terms = [kw]
+                if issue.wilayah and issue.wilayah != "Aceh (Keseluruhan)":
+                    clean_wilayah = issue.wilayah.replace("Kabupaten ", "").replace("Kota ", "")
+                    tiktok_search_terms.append(clean_wilayah)
+                    
+                if issue.keyword_regional:
+                    kws = [k.strip() for k in issue.keyword_regional.split(',') if k.strip()]
+                    if kws:
+                        tiktok_search_terms.append(kws[0])
+                        
+                tiktok_query = " ".join(tiktok_search_terms)
+                logger.info("Starting TikTok search for query '%s'...", tiktok_query)
+
+                try:
+                    search_url = "https://tiktok-api23.p.rapidapi.com/api/search/video"
+                    search_params = {"keyword": tiktok_query, "count": "5", "cursor": "0"}
+                    response = await client.get(search_url, headers=headers, params=search_params)
+                    response.raise_for_status()
+                    search_data = response.json()
+                    
+                    kw_videos = []
+                    if isinstance(search_data, dict):
+                        if search_data.get("status") == "failed":
+                            logger.error("TikTok API returned failed status for query %s: %s", tiktok_query, search_data.get("msg"))
+                            continue
+                        data_section = search_data.get("data") or search_data
+                        if isinstance(data_section, dict):
+                            kw_videos = data_section.get("videos") or data_section.get("items") or data_section.get("posts") or data_section.get("item_list") or data_section.get("itemList") or data_section.get("itemList") or []
+                        elif isinstance(data_section, list):
+                            kw_videos = data_section
+                            
+                    for v in kw_videos:
+                        if isinstance(v, dict):
+                            video_id = v.get("video_id") or v.get("aweme_id") or v.get("id")
+                            if video_id and not any((vid.get("video_id") == video_id or vid.get("id") == video_id) for vid in videos):
+                                videos.append(v)
+                except Exception as search_err:
+                    logger.error("TikTok search failed for query %s: %s", tiktok_query, search_err)
+                    continue
             
             if not videos:
-
-                logger.info("No TikTok videos found for keyword '%s'. Response: %s", sanitized_keyword, search_data)
+                logger.info("No TikTok videos found for keywords list: %s.", keywords)
                 return []
 
-            logger.info("Found %d TikTok videos, retrieving comments...", len(videos))
+            logger.info("Found %d unique TikTok videos across keywords, retrieving comments...", len(videos))
 
             # 2. Iterate videos and get comments
             for video in videos:

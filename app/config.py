@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     environment: str = "development"
     hf_token: str = ""
     rapidapi_tiktok_key: str = ""
+    gemini_api_key: str = ""
+
 
 
     model_config = SettingsConfigDict(
