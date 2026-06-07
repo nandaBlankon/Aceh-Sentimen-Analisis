@@ -19,6 +19,13 @@ class Issue(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # Cached AI Summaries
+    ringkasan_umum: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analisis_berita: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analisis_tiktok: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rekomendasi: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_updated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Bidirectional relationship with SentimentData (cascading deletes)
     sentiment_records: Mapped[list["SentimentData"]] = relationship(
         "SentimentData", back_populates="issue", cascade="all, delete-orphan"

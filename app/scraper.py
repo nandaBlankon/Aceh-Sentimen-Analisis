@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import urllib.parse
 from typing import List, Dict, Any
@@ -155,6 +156,9 @@ async def scrape_and_store_sentiment(
             
             db.add(sentiment_record)
             saved_records.append(sentiment_record)
+            
+            # Proactively sleep 4.1s to respect Gemini API rate limits (15 RPM)
+            await asyncio.sleep(4.1)
             
         except Exception as e:
             logger.warning("Failed to analyze sentiment for article '%s': %s", title[:30], e)
@@ -327,6 +331,9 @@ async def scrape_tiktok_comments(
                         )
                         db.add(sentiment_record)
                         saved_records.append(sentiment_record)
+
+                        # Proactively sleep 4.1s to respect Gemini API rate limits (15 RPM)
+                        await asyncio.sleep(4.1)
 
                 except Exception as e:
                     logger.warning("Failed to retrieve or process comments for video %s: %s", video_id, e)

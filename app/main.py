@@ -53,6 +53,26 @@ def migrate_database():
             logger.info("Adding column 'keyword_regional' to table 'issues'...")
             db.execute(text("ALTER TABLE issues ADD COLUMN keyword_regional VARCHAR(500) NULL"))
             
+        if "ringkasan_umum" not in columns:
+            logger.info("Adding column 'ringkasan_umum' to table 'issues'...")
+            db.execute(text("ALTER TABLE issues ADD COLUMN ringkasan_umum TEXT NULL"))
+
+        if "analisis_berita" not in columns:
+            logger.info("Adding column 'analisis_berita' to table 'issues'...")
+            db.execute(text("ALTER TABLE issues ADD COLUMN analisis_berita TEXT NULL"))
+
+        if "analisis_tiktok" not in columns:
+            logger.info("Adding column 'analisis_tiktok' to table 'issues'...")
+            db.execute(text("ALTER TABLE issues ADD COLUMN analisis_tiktok TEXT NULL"))
+
+        if "rekomendasi" not in columns:
+            logger.info("Adding column 'rekomendasi' to table 'issues'...")
+            db.execute(text("ALTER TABLE issues ADD COLUMN rekomendasi TEXT NULL"))
+
+        if "summary_updated_at" not in columns:
+            logger.info("Adding column 'summary_updated_at' to table 'issues'...")
+            db.execute(text("ALTER TABLE issues ADD COLUMN summary_updated_at TIMESTAMP NULL"))
+            
         db.commit()
         logger.info("Database migrations completed successfully.")
     except Exception as e:
@@ -99,6 +119,13 @@ async def run_background_scrape(issue_id: int, options: ScrapeOptions):
                 await scrape_tiktok_comments(issue.keyword, db, options.max_records)
             except Exception as tiktok_err:
                 logger.error("TikTok comments scraping failed for issue %s: %s", issue_id, tiktok_err)
+
+            # 3. Generate summary automatically after scraping finishes
+            try:
+                logger.info("Starting automatic summary generation for issue %s", issue.nama_isu)
+                await generate_and_save_issue_summary(issue_id, db, force=True)
+            except Exception as sum_err:
+                logger.error("Automatic summary generation failed for issue %s: %s", issue_id, sum_err)
         else:
             logger.error("Active issue not found in background task for id %s", issue_id)
     except Exception as e:
@@ -465,18 +492,28 @@ def generate_fallback_summary(issue_name: str, wilayah: str, pos_count: int, neg
     }
 
 
-@app.get("/analytics/{issue_id}/summary", tags=["Analytics"])
-async def get_issue_summary(issue_id: int, db: Session = Depends(get_db)):
+async def generate_and_save_issue_summary(issue_id: int, db: Session, force: bool = False) -> dict:
     """
-    Generate an executive summary using Google Gemini 2.5 Flash.
-    Synthesizes data from local news portals and TikTok comments for the given issue.
+    Helper function to generate an executive summary using Gemini 2.5 Flash
+    and cache the result in the database under the Issue model.
+    If cached summary exists and force is False, returns the cached summary.
     """
     # 1. Verify the issue exists
     issue = db.query(Issue).filter(Issue.id == issue_id).first()
     if not issue:
-        raise HTTPException(status_code=404, detail="Issue not found.")
-        
-    # 2. Fetch all sentiment data for this issue
+        return {"status": "error", "message": "Issue not found."}
+
+    # 2. Return cached summary if available and not forced
+    if not force and issue.ringkasan_umum:
+        return {
+            "status": "success",
+            "ringkasan_umum": issue.ringkasan_umum,
+            "analisis_berita": issue.analisis_berita,
+            "analisis_tiktok": issue.analisis_tiktok,
+            "rekomendasi": issue.rekomendasi
+        }
+
+    # 3. Fetch all sentiment data for this issue
     records = db.query(SentimentData).filter(SentimentData.issue_id == issue_id).all()
     
     if not records:
@@ -489,7 +526,7 @@ async def get_issue_summary(issue_id: int, db: Session = Depends(get_db)):
             "rekomendasi": ""
         }
         
-    # 3. Group records into News vs TikTok
+    # 4. Group records into News vs TikTok
     news_items = []
     tiktok_items = []
     
@@ -502,11 +539,11 @@ async def get_issue_summary(issue_id: int, db: Session = Depends(get_db)):
         else:
             news_items.append(item_text)
             
-    # Limit inputs to avoid exceeding Gemini token limits (e.g. up to 100 items each)
+    # Limit inputs to avoid exceeding Gemini token limits
     news_summary_input = "\n".join(news_items[:100])
     tiktok_summary_input = "\n".join(tiktok_items[:100])
     
-    # 4. Construct prompt
+    # 5. Construct prompt
     prompt = (
         "Anda adalah asisten AI analis kebijakan publik dan komunikasi strategis untuk Pemerintah Daerah di Aceh.\n"
         f"Berikut adalah data sentimen yang dikumpulkan untuk Isu: '{issue.nama_isu}' di Wilayah: '{issue.wilayah}'.\n\n"
@@ -524,12 +561,14 @@ async def get_issue_summary(issue_id: int, db: Session = Depends(get_db)):
         "- Format Output: Wajib mengembalikan JSON objek yang valid dan sesuai schema.\n"
     )
     
-    # 5. Call Gemini 2.5 Flash REST API
+    # 6. Call Gemini 2.5 Flash REST API or 9Router
+    ninerouter_base = settings.ninerouter_api_base
+    ninerouter_key = settings.ninerouter_api_key
     gemini_api_key = settings.gemini_api_key or os.environ.get("GEMINI_API_KEY")
-    if not gemini_api_key:
-        # Fallback to local analysis if key is missing
-        logger.warning("No Gemini API key found, generating local fallback summary.")
-        return generate_fallback_summary(
+    
+    if not ninerouter_base and not gemini_api_key:
+        logger.warning("Neither 9Router nor Gemini API credentials found, generating local fallback summary.")
+        fallback = generate_fallback_summary(
             issue_name=issue.nama_isu,
             wilayah=issue.wilayah,
             pos_count=sum(1 for r in records if r.sentimen == 'pos'),
@@ -538,45 +577,66 @@ async def get_issue_summary(issue_id: int, db: Session = Depends(get_db)):
             news_count=len(news_items),
             tiktok_count=len(tiktok_items)
         )
+        # Store fallback summary in DB as well to prevent re-generation
+        issue.ringkasan_umum = fallback["ringkasan_umum"]
+        issue.analisis_berita = fallback["analisis_berita"]
+        issue.analisis_tiktok = fallback["analisis_tiktok"]
+        issue.rekomendasi = fallback["rekomendasi"]
+        issue.summary_updated_at = func.now()
+        db.commit()
+        return fallback
         
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
-    
-    payload = {
-        "contents": [{
-            "parts": [{
-                "text": prompt
-            }]
-        }],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": {
-                "type": "OBJECT",
-                "properties": {
-                    "ringkasan_umum": {
-                        "type": "STRING",
-                        "description": "Ringkasan eksekutif umum mengenai isu secara menyeluruh."
-                    },
-                    "analisis_berita": {
-                        "type": "STRING",
-                        "description": "Analisis mendalam mengenai pemberitaan media (portal berita)."
-                    },
-                    "analisis_tiktok": {
-                        "type": "STRING",
-                        "description": "Analisis mendalam mengenai suara publik / keluhan / komentar di media sosial TikTok."
-                    },
-                    "rekomendasi": {
-                        "type": "STRING",
-                        "description": "Rekomendasi kebijakan taktis dan strategis bagi pimpinan daerah."
-                    }
-                },
-                "required": ["ringkasan_umum", "analisis_berita", "analisis_tiktok", "rekomendasi"]
-            }
-        }
-    }
-    
     headers = {
         "Content-Type": "application/json"
     }
+    
+    if ninerouter_base:
+        url = f"{ninerouter_base.rstrip('/')}/chat/completions"
+        if ninerouter_key:
+            headers["Authorization"] = f"Bearer {ninerouter_key}"
+        payload = {
+            "model": settings.ninerouter_model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "response_format": {
+                "type": "json_object"
+            }
+        }
+    else:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
+        payload = {
+            "contents": [{
+                "parts": [{
+                    "text": prompt
+                }]
+            }],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseSchema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "ringkasan_umum": {
+                            "type": "STRING",
+                            "description": "Ringkasan eksekutif umum mengenai isu secara menyeluruh."
+                        },
+                        "analisis_berita": {
+                            "type": "STRING",
+                            "description": "Analisis mendalam mengenai pemberitaan media (portal berita)."
+                        },
+                        "analisis_tiktok": {
+                            "type": "STRING",
+                            "description": "Analisis mendalam mengenai suara publik / keluhan / komentar di media sosial TikTok."
+                        },
+                        "rekomendasi": {
+                            "type": "STRING",
+                            "description": "Rekomendasi kebijakan taktis dan strategis bagi pimpinan daerah."
+                        }
+                    },
+                    "required": ["ringkasan_umum", "analisis_berita", "analisis_tiktok", "rekomendasi"]
+                }
+            }
+        }
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -584,28 +644,43 @@ async def get_issue_summary(issue_id: int, db: Session = Depends(get_db)):
             response.raise_for_status()
             result = response.json()
             
-            candidates = result.get("candidates", [])
-            if not candidates:
-                raise ValueError("No candidates found in Gemini response.")
-                
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if not parts:
-                raise ValueError("No parts found in Gemini candidate response.")
-                
-            text_response = parts[0].get("text", "").strip()
-            data = json.loads(text_response)
+            if ninerouter_base:
+                choices = result.get("choices", [])
+                if not choices:
+                    raise ValueError("No choices found in 9Router response.")
+                content = choices[0].get("message", {}).get("content", "").strip()
+                if content.startswith("```"):
+                    content = content.strip("`").replace("json", "", 1).strip()
+                data = json.loads(content)
+            else:
+                candidates = result.get("candidates", [])
+                if not candidates:
+                    raise ValueError("No candidates found in Gemini response.")
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if not parts:
+                    raise ValueError("No parts found in Gemini candidate response.")
+                text_response = parts[0].get("text", "").strip()
+                data = json.loads(text_response)
+            
+            # Save generated summary to database
+            issue.ringkasan_umum = data.get("ringkasan_umum", "")
+            issue.analisis_berita = data.get("analisis_berita", "")
+            issue.analisis_tiktok = data.get("analisis_tiktok", "")
+            issue.rekomendasi = data.get("rekomendasi", "")
+            issue.summary_updated_at = func.now()
+            db.commit()
             
             return {
                 "status": "success",
-                "ringkasan_umum": data.get("ringkasan_umum", ""),
-                "analisis_berita": data.get("analisis_berita", ""),
-                "analisis_tiktok": data.get("analisis_tiktok", ""),
-                "rekomendasi": data.get("rekomendasi", "")
+                "ringkasan_umum": issue.ringkasan_umum,
+                "analisis_berita": issue.analisis_berita,
+                "analisis_tiktok": issue.analisis_tiktok,
+                "rekomendasi": issue.rekomendasi
             }
             
     except Exception as e:
-        logger.warning("Gemini API call failed, generating local fallback summary. Error: %s", e)
-        return generate_fallback_summary(
+        logger.warning("AI provider summary generation failed, generating local fallback summary. Error: %s", e)
+        fallback = generate_fallback_summary(
             issue_name=issue.nama_isu,
             wilayah=issue.wilayah,
             pos_count=sum(1 for r in records if r.sentimen == 'pos'),
@@ -614,3 +689,30 @@ async def get_issue_summary(issue_id: int, db: Session = Depends(get_db)):
             news_count=len(news_items),
             tiktok_count=len(tiktok_items)
         )
+        # Save fallback to DB
+        issue.ringkasan_umum = fallback["ringkasan_umum"]
+        issue.analisis_berita = fallback["analisis_berita"]
+        issue.analisis_tiktok = fallback["analisis_tiktok"]
+        issue.rekomendasi = fallback["rekomendasi"]
+        issue.summary_updated_at = func.now()
+        db.commit()
+        return fallback
+
+
+@app.get("/analytics/{issue_id}/summary", tags=["Analytics"])
+async def get_issue_summary(issue_id: int, force: bool = False, db: Session = Depends(get_db)):
+    """
+    Generate an executive summary using Google Gemini 2.5 Flash.
+    Synthesizes data from local news portals and TikTok comments for the given issue.
+    """
+    # 1. Verify the issue exists
+    issue = db.query(Issue).filter(Issue.id == issue_id).first()
+    if not issue:
+        raise HTTPException(status_code=404, detail="Issue not found.")
+        
+    result = await generate_and_save_issue_summary(issue_id=issue_id, db=db, force=force)
+    
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+        
+    return result

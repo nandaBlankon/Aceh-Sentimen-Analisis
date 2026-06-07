@@ -1080,7 +1080,7 @@
             }
         }
 
-        async function loadAISummary(issueId) {
+        async function loadAISummary(issueId, force = false) {
             if (!issueId) return;
             
             const container = document.getElementById("ai-summary-container");
@@ -1097,7 +1097,7 @@
             badge.textContent = "Menganalisis...";
             
             try {
-                const response = await fetch(`${API_BASE_URL}/analytics/${issueId}/summary`);
+                const response = await fetch(`${API_BASE_URL}/analytics/${issueId}/summary` + (force ? "?force=true" : ""));
                 if (!response.ok) {
                     throw new Error("Gagal memanggil API Ringkasan AI");
                 }
@@ -1260,7 +1260,7 @@
             const select = document.getElementById("issue-select");
             const issueId = select.value;
             if (issueId) {
-                loadAISummary(issueId);
+                loadAISummary(issueId, true);
             } else {
                 showToast("Pilih isu aktif terlebih dahulu untuk melakukan analisis ulang.", true);
             }

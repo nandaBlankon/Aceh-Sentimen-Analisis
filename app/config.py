@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     rapidapi_tiktok_key: str = ""
     gemini_api_key: str = ""
 
+    # 9Router configuration
+    ninerouter_api_base: str | None = None
+    ninerouter_api_key: str | None = None
+    ninerouter_model: str = "gemini-2.5-flash"
+
 
 
     model_config = SettingsConfigDict(
