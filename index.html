@@ -608,44 +608,7 @@
         </div>
     </main>
 
-    <!-- Sync Modal -->
-    <div id="sync-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden flex items-center justify-center">
-        <div class="bg-white rounded-2xl w-full max-w-md p-6 shadow-xl transform transition-all relative">
-            <button id="close-sync-modal" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
-                <i class="ph ph-x text-xl"></i>
-            </button>
-            <div class="flex items-center gap-3 mb-4">
-                <div class="w-10 h-10 rounded-full bg-blue-50 text-primary flex items-center justify-center">
-                    <i class="ph ph-arrows-clockwise text-xl"></i>
-                </div>
-                <h3 class="font-bold text-lg text-slate-800">Opsi Sinkronisasi</h3>
-            </div>
-            <p class="text-sm text-slate-500 mb-6">Pilih batas maksimal data dan rentang waktu publikasi untuk Google News RSS dan komentar TikTok.</p>
-            <form id="sync-form" class="space-y-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Maksimal Data per Platform</label>
-                    <select id="sync-limit" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none text-sm">
-                        <option value="10">10 Data</option>
-                        <option value="50" selected>50 Data</option>
-                        <option value="100">100 Data</option>
-                    </select>
 
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Rentang Waktu</label>
-                    <select id="sync-time" class="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none text-sm">
-                        <option value="1d">24 Jam Terakhir</option>
-                        <option value="7d" selected>7 Hari Terakhir</option>
-                        <option value="30d">30 Hari Terakhir</option>
-                        <option value="all">Semua Waktu</option>
-                    </select>
-                </div>
-                <button type="submit" class="w-full bg-primary hover:bg-blue-600 text-white font-medium py-2.5 rounded-lg text-sm transition-colors mt-6 flex items-center justify-center gap-2">
-                    Mulai Sinkronisasi Latar Belakang
-                </button>
-            </form>
-        </div>
-    </div>
 
     <!-- Toast Notification -->
     <div id="toast" class="fixed bottom-5 right-5 transform translate-y-20 opacity-0 transition-all duration-300 bg-secondary text-white px-5 py-3 rounded-xl shadow-2xl flex items-center gap-3 z-50 border border-slate-700">
@@ -653,11 +616,39 @@
         <span id="toast-message" class="text-sm font-medium">Notifikasi berhasil!</span>
     </div>
 
+    <!-- Edit Issue Modal -->
+    <div id="edit-issue-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm hidden transition-opacity opacity-0">
+        <div class="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden transform scale-95 transition-transform duration-300">
+            <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <h3 class="font-bold text-slate-800 text-lg">Edit Proyek Isu</h3>
+                <button type="button" onclick="closeEditModal()" class="text-slate-400 hover:text-slate-600 transition-colors">
+                    <i class="ph ph-x text-xl"></i>
+                </button>
+            </div>
+            <form id="edit-issue-form" class="p-6 space-y-4 text-left">
+                <input type="hidden" id="edit-issue-id">
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Nama Isu/Proyek</label>
+                    <input type="text" id="edit-issue-name" class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none text-sm transition-all" required>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wide">Kata Kunci Utama (Keywords)</label>
+                    <textarea id="edit-issue-keyword" rows="3" class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none text-sm transition-all font-mono text-xs" required></textarea>
+                </div>
+                <div class="pt-2 flex gap-3">
+                    <button type="button" onclick="closeEditModal()" class="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 font-medium hover:bg-slate-50 transition-colors text-sm">Batal</button>
+                    <button type="submit" class="flex-1 bg-primary hover:bg-primary/90 text-white font-medium py-2.5 rounded-lg text-sm transition-colors shadow-lg shadow-primary/30">Simpan Perubahan</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
         // 1. Backend Base Configuration
         const API_BASE_URL = "http://127.0.0.1:8000";
         let timeSeriesChart = null;
         const activeScrapes = new Set();
+        let syncIntervalId = null;
 
         // 2. SPA View Routing Logic
         const navItems = document.querySelectorAll('.nav-item');
@@ -835,6 +826,15 @@
                 if (!response.ok) throw new Error("Gagal mengambil data daftar isu.");
                 const issues = await response.json();
                 
+                // Sync activeScrapes with backend status
+                activeScrapes.clear();
+                issues.forEach(issue => {
+                    if (issue.is_scraping) {
+                        activeScrapes.add(Number(issue.id));
+                        activeScrapes.add(String(issue.id));
+                    }
+                });
+                
                 const select = document.getElementById("issue-select");
                 const currentVal = select.value;
                 select.replaceChildren(); // Safe DOM clear
@@ -870,12 +870,43 @@
         async function handleIssueChange(issueId) {
             if (!issueId) return;
             
-            // Check active scraping status for this issue to update banner
+            // Clear any existing polling interval
+            if (syncIntervalId) {
+                clearInterval(syncIntervalId);
+                syncIntervalId = null;
+            }
+            
+            // Check active scraping status for this issue to update banner and sync button
             const banner = document.getElementById("scrape-progress-banner");
-            if (activeScrapes.has(Number(issueId)) || activeScrapes.has(String(issueId))) {
+            const syncBtn = document.getElementById("sync-btn");
+            const syncIcon = document.getElementById("sync-icon");
+            const syncText = document.getElementById("sync-text");
+            
+            const isScraping = activeScrapes.has(Number(issueId)) || activeScrapes.has(String(issueId));
+            
+            if (isScraping) {
                 banner.classList.remove("hidden");
+                if (syncBtn) {
+                    syncBtn.className = "bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm flex items-center gap-2";
+                    if (syncIcon) syncIcon.className = "ph ph-stop-circle text-lg animate-pulse";
+                    if (syncText) syncText.textContent = "Hentikan Sinkronisasi";
+                }
+                
+                // Start polling updates every 10 seconds while scraping is active
+                syncIntervalId = setInterval(async () => {
+                    console.log("Polling updates for active scraping issue ID:", issueId);
+                    await Promise.all([
+                        loadAnalytics(issueId),
+                        loadFeed(issueId)
+                    ]);
+                }, 10000);
             } else {
                 banner.classList.add("hidden");
+                if (syncBtn) {
+                    syncBtn.className = "bg-primary hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm flex items-center gap-2";
+                    if (syncIcon) syncIcon.className = "ph ph-arrows-clockwise text-lg";
+                    if (syncText) syncText.textContent = "Mulai Sinkronisasi";
+                }
             }
             
             await Promise.all([
@@ -1170,6 +1201,17 @@
                 if (!response.ok) throw new Error("Gagal mengambil data master isu.");
                 const issues = await response.json();
                 
+                // Sync activeScrapes with backend status
+                issues.forEach(issue => {
+                    if (issue.is_scraping) {
+                        activeScrapes.add(Number(issue.id));
+                        activeScrapes.add(String(issue.id));
+                    } else {
+                        activeScrapes.delete(Number(issue.id));
+                        activeScrapes.delete(String(issue.id));
+                    }
+                });
+                
                 // Update sidebar and table count badge
                 document.getElementById("sidebar-issue-count").textContent = issues.length;
                 
@@ -1219,7 +1261,7 @@
                     
                     // Col 4: Action button
                     const tdAction = document.createElement("td");
-                    tdAction.className = "p-4 text-right";
+                    tdAction.className = "p-4 text-right flex justify-end gap-2 items-center";
                     
                     const actionBtn = document.createElement("button");
                     actionBtn.className = "px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded text-xs font-medium transition-colors";
@@ -1234,6 +1276,18 @@
                         handleIssueChange(issue.id);
                     });
                     tdAction.appendChild(actionBtn);
+
+                    const editBtn = document.createElement("button");
+                    editBtn.className = "px-3 py-1.5 bg-amber-50 text-amber-600 hover:bg-amber-500 hover:text-white rounded text-xs font-medium transition-colors border border-amber-200 hover:border-transparent";
+                    editBtn.textContent = "Edit";
+                    editBtn.addEventListener("click", () => openEditModal(issue));
+                    tdAction.appendChild(editBtn);
+
+                    const deleteBtn = document.createElement("button");
+                    deleteBtn.className = "px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded text-xs font-medium transition-colors border border-red-200 hover:border-transparent";
+                    deleteBtn.textContent = "Hapus";
+                    deleteBtn.addEventListener("click", () => deleteIssueConfirmed(issue));
+                    tdAction.appendChild(deleteBtn);
                     
                     tr.appendChild(tdName);
                     tr.appendChild(tdStatus);
@@ -1266,77 +1320,67 @@
             }
         });
 
-        // Trigger Scrape Button click
-        document.getElementById("sync-btn").addEventListener("click", () => {
+        // Trigger Scrape / Toggle Continuous Sync
+        document.getElementById("sync-btn").addEventListener("click", async () => {
             const select = document.getElementById("issue-select");
             const issueId = select.value;
             if (!issueId) {
                 showToast("Pilih isu aktif terlebih dahulu untuk melakukan sinkronisasi.", true);
                 return;
             }
-            document.getElementById("sync-modal").classList.remove("hidden");
-        });
-        
-        document.getElementById("close-sync-modal").addEventListener("click", () => {
-            document.getElementById("sync-modal").classList.add("hidden");
-        });
-
-        document.getElementById("sync-form").addEventListener("submit", async (e) => {
-            e.preventDefault();
-            document.getElementById("sync-modal").classList.add("hidden");
             
-            const select = document.getElementById("issue-select");
-            const issueId = select.value;
-            const maxRecords = parseInt(document.getElementById("sync-limit").value, 10);
-            const timeFilter = document.getElementById("sync-time").value;
+            const isScraping = activeScrapes.has(Number(issueId)) || activeScrapes.has(String(issueId));
             
-            // Mark issue as active scraping
-            activeScrapes.add(String(issueId));
-            activeScrapes.add(Number(issueId));
-            
-            // Show dynamic progress banner
-            document.getElementById("scrape-progress-banner").classList.remove("hidden");
-            showToast("Agen AI sedang memulai proses sinkronisasi...");
-            loadIssuesTable(); // Refresh table status immediately
-            
-            try {
-                const response = await fetch(`${API_BASE_URL}/trigger-scrape/${issueId}`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        max_records: maxRecords,
-                        time_filter: timeFilter
-                    })
-                });
-                
-                if (!response.ok) {
-                    const errData = await response.json();
-                    throw new Error(errData.detail || "Gagal menyinkronkan data.");
-                }
-                
-                const result = await response.json();
-                showToast(result.message);
-                
-                // Hide banner after 15 seconds since it's background
-                setTimeout(() => {
-                    activeScrapes.delete(String(issueId));
-                    activeScrapes.delete(Number(issueId));
-                    if (document.getElementById("issue-select").value == issueId) {
-                        document.getElementById("scrape-progress-banner").classList.add("hidden");
-                        loadAnalytics(issueId);
-                        loadFeed(issueId);
+            if (!isScraping) {
+                // Start Continuous Sync
+                showToast("Sedang memulai sinkronisasi...");
+                try {
+                    const response = await fetch(`${API_BASE_URL}/issues/${issueId}/start-scrape`, {
+                        method: "POST"
+                    });
+                    
+                    if (!response.ok) {
+                        const errData = await response.json();
+                        throw new Error(errData.detail || "Gagal memulai sinkronisasi.");
                     }
-                    loadIssuesTable();
-                }, 15000);
-                
-            } catch (error) {
-                console.error(error);
-                showToast(error.message, true);
-                
-                activeScrapes.delete(String(issueId));
-                activeScrapes.delete(Number(issueId));
-                document.getElementById("scrape-progress-banner").classList.add("hidden");
-                loadIssuesTable();
+                    
+                    const result = await response.json();
+                    showToast(result.message);
+                    
+                    activeScrapes.add(Number(issueId));
+                    activeScrapes.add(String(issueId));
+                    
+                    await handleIssueChange(issueId);
+                    await loadIssuesTable();
+                } catch (error) {
+                    console.error(error);
+                    showToast(error.message, true);
+                }
+            } else {
+                // Stop Continuous Sync
+                showToast("Sedang menghentikan sinkronisasi...");
+                try {
+                    const response = await fetch(`${API_BASE_URL}/issues/${issueId}/stop-scrape`, {
+                        method: "POST"
+                    });
+                    
+                    if (!response.ok) {
+                        const errData = await response.json();
+                        throw new Error(errData.detail || "Gagal menghentikan sinkronisasi.");
+                    }
+                    
+                    const result = await response.json();
+                    showToast(result.message);
+                    
+                    activeScrapes.delete(Number(issueId));
+                    activeScrapes.delete(String(issueId));
+                    
+                    await handleIssueChange(issueId);
+                    await loadIssuesTable();
+                } catch (error) {
+                    console.error(error);
+                    showToast(error.message, true);
+                }
             }
         });
 
@@ -1381,6 +1425,108 @@
                 showToast(error.message, true);
             }
         });
+
+        // 5.5 Edit and Delete Handlers
+        function openEditModal(issue) {
+            const modal = document.getElementById("edit-issue-modal");
+            document.getElementById("edit-issue-id").value = issue.id;
+            document.getElementById("edit-issue-name").value = issue.nama_isu;
+            document.getElementById("edit-issue-keyword").value = issue.keyword;
+            
+            modal.classList.remove("hidden");
+            // Allow display block to apply before animating opacity
+            setTimeout(() => {
+                modal.classList.remove("opacity-0");
+                modal.querySelector('div').classList.remove("scale-95");
+            }, 10);
+        }
+
+        function closeEditModal() {
+            const modal = document.getElementById("edit-issue-modal");
+            modal.classList.add("opacity-0");
+            modal.querySelector('div').classList.add("scale-95");
+            setTimeout(() => {
+                modal.classList.add("hidden");
+            }, 300);
+        }
+
+        document.getElementById("edit-issue-form").addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const issueId = document.getElementById("edit-issue-id").value;
+            const namaIsu = document.getElementById("edit-issue-name").value;
+            const keyword = document.getElementById("edit-issue-keyword").value;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/issues/${issueId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nama_isu: namaIsu, keyword: keyword })
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.detail || "Gagal mengedit isu.");
+                }
+
+                showToast("Isu berhasil diupdate!");
+                closeEditModal();
+                
+                // Refresh list dropdown and database table
+                await loadIssuesDropdown();
+                await loadIssuesTable();
+            } catch (error) {
+                console.error(error);
+                showToast(error.message, true);
+            }
+        });
+
+        async function deleteIssueConfirmed(issue) {
+            if (!confirm(`Peringatan: Anda akan menghapus isu "${issue.nama_isu}" beserta seluruh data sentimen yang terkait. Lanjutkan?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/issues/${issue.id}`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) {
+                    // If already deleted (404), treat as success to avoid UI errors on double clicks
+                    if (response.status === 404) {
+                        console.warn("Isu sudah dihapus sebelumnya.");
+                    } else {
+                        const errData = await response.json();
+                        throw new Error(errData.detail || "Gagal menghapus isu.");
+                    }
+                } else {
+                    showToast("Isu berhasil dihapus.");
+                }
+                
+                // Reset dropdown if the deleted issue was selected
+                const select = document.getElementById("issue-select");
+                if (select.value == issue.id) {
+                    select.value = "";
+                    document.getElementById("dashboard-content").style.display = "none";
+                    document.getElementById("empty-state").style.display = "flex";
+                }
+
+                // If it was scraping, make sure to remove it from activeScrapes
+                if (activeScrapes.has(issue.id)) {
+                    activeScrapes.delete(issue.id);
+                    if (activeScrapes.size === 0 && syncIntervalId) {
+                        clearInterval(syncIntervalId);
+                        syncIntervalId = null;
+                    }
+                }
+
+                // Refresh list dropdown and database table
+                await loadIssuesDropdown();
+                await loadIssuesTable();
+            } catch (error) {
+                console.error(error);
+                showToast(error.message, true);
+            }
+        }
 
         // 6. Application Onload Entry Point
         window.addEventListener("DOMContentLoaded", async () => {

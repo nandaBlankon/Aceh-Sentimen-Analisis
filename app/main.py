@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import json
 import os
 import httpx
@@ -15,6 +16,9 @@ from .models import Issue, SentimentData
 from .scraper import scrape_and_store_sentiment, scrape_tiktok_comments
 
 logger = logging.getLogger("app.main")
+
+# Dictionary to keep track of active background scraping tasks
+active_scrapers: dict[int, asyncio.Task] = {}
 
 app = FastAPI(
     title="Aceh Sentimen Analisis API",
@@ -72,6 +76,10 @@ def migrate_database():
         if "summary_updated_at" not in columns:
             logger.info("Adding column 'summary_updated_at' to table 'issues'...")
             db.execute(text("ALTER TABLE issues ADD COLUMN summary_updated_at TIMESTAMP NULL"))
+            
+        if "is_scraping" not in columns:
+            logger.info("Adding column 'is_scraping' to table 'issues'...")
+            db.execute(text("ALTER TABLE issues ADD COLUMN is_scraping BOOLEAN DEFAULT 0 NOT NULL"))
             
         db.commit()
         logger.info("Database migrations completed successfully.")
@@ -134,6 +142,97 @@ async def run_background_scrape(issue_id: int, options: ScrapeOptions):
         db.close()
 
 
+async def run_continuous_scrape(issue_id: int):
+    """
+    Continuous background loop that polls news articles and TikTok comments
+    for an issue every 5 minutes.
+    """
+    logger.info("Starting continuous background scraping loop for issue ID %s", issue_id)
+    try:
+        while True:
+            db = SessionLocal()
+            try:
+                issue = db.query(Issue).filter(Issue.id == issue_id, Issue.is_active == True).first()
+                if not issue or not issue.is_scraping:
+                    logger.info("Exiting continuous scraping loop for issue ID %s (scraping disabled or inactive)", issue_id)
+                    break
+                
+                keyword = issue.keyword
+                logger.info("Continuous scraping cycle starting for issue: '%s'", issue.nama_isu)
+            except Exception as e:
+                logger.error("Database error in scraping loop for issue %s: %s", issue_id, e)
+                db.close()
+                await asyncio.sleep(60)
+                continue
+
+            # 1. Scrape Google News
+            try:
+                logger.info("Scraping Google News in background loop for issue %s", issue_id)
+                await scrape_and_store_sentiment(keyword, db, max_records=50, time_filter="7d")
+            except Exception as news_err:
+                logger.error("Google News scraping in background loop failed for issue %s: %s", issue_id, news_err)
+
+            # 2. Scrape TikTok Comments
+            try:
+                logger.info("Scraping TikTok comments in background loop for issue %s", issue_id)
+                if settings.rapidapi_tiktok_key:
+                    await scrape_tiktok_comments(keyword, db, max_records=50)
+                else:
+                    logger.warning("TikTok RapidAPI key not set, skipping TikTok comments scraping.")
+            except Exception as tiktok_err:
+                logger.error("TikTok scraping in background loop failed for issue %s: %s", issue_id, tiktok_err)
+
+            # 3. Generate summary automatically after scraping finishes
+            try:
+                logger.info("Updating executive cached summary in background loop for issue %s", issue_id)
+                await generate_and_save_issue_summary(issue_id, db, force=True)
+            except Exception as sum_err:
+                logger.error("Summary update in background loop failed for issue %s: %s", issue_id, sum_err)
+            
+            db.close()
+
+            logger.info("Continuous scraping cycle finished for issue %s. Sleeping for 300 seconds...", issue_id)
+            await asyncio.sleep(300)
+
+    except asyncio.CancelledError:
+        logger.info("Continuous scraping loop for issue ID %s was cancelled.", issue_id)
+    except Exception as e:
+        logger.error("Unexpected error in continuous scraping loop for issue ID %s: %s", issue_id, e)
+    finally:
+        active_scrapers.pop(issue_id, None)
+        # Ensure is_scraping is set to False in DB if we exit abnormally or cancelled
+        db = SessionLocal()
+        try:
+            issue = db.query(Issue).filter(Issue.id == issue_id).first()
+            if issue and issue.is_scraping:
+                issue.is_scraping = False
+                db.commit()
+                logger.info("Reset is_scraping to False in DB for issue ID %s", issue_id)
+        except Exception as e:
+            logger.error("Failed to reset is_scraping in DB for issue %s: %s", issue_id, e)
+        finally:
+            db.close()
+
+
+@app.on_event("startup")
+async def resume_active_scrapers():
+    """
+    On startup, resume active continuous scrapers.
+    """
+    logger.info("Checking for active continuous scrapers to resume...")
+    db = SessionLocal()
+    try:
+        active_issues = db.query(Issue).filter(Issue.is_active == True, Issue.is_scraping == True).all()
+        for issue in active_issues:
+            logger.info("Resuming active background scraper on startup for issue ID %s (%s)", issue.id, issue.nama_isu)
+            task = asyncio.create_task(run_continuous_scrape(issue.id))
+            active_scrapers[issue.id] = task
+    except Exception as e:
+        logger.error("Failed to resume active scrapers on startup: %s", e)
+    finally:
+        db.close()
+
+
 @app.get("/health", tags=["System"])
 def health_check():
     """
@@ -182,6 +281,7 @@ def get_issues(active_only: bool = False, db: Session = Depends(get_db)):
                 "keyword_regional": issue.keyword_regional,
                 "created_at": issue.created_at,
                 "is_active": issue.is_active,
+                "is_scraping": issue.is_scraping,
                 "total_records": counts_map.get(issue.id, 0)
             }
             for issue in issues
@@ -226,6 +326,7 @@ def create_issue(issue_in: IssueCreate, db: Session = Depends(get_db)):
             "wilayah": new_issue.wilayah,
             "keyword_regional": new_issue.keyword_regional,
             "is_active": new_issue.is_active,
+            "is_scraping": new_issue.is_scraping,
             "created_at": new_issue.created_at
         }
     except HTTPException:
@@ -273,6 +374,7 @@ def update_issue(issue_id: int, issue_in: IssueUpdate, db: Session = Depends(get
             "wilayah": issue.wilayah,
             "keyword_regional": issue.keyword_regional,
             "is_active": issue.is_active,
+            "is_scraping": issue.is_scraping,
             "created_at": issue.created_at
         }
     except HTTPException:
@@ -294,9 +396,16 @@ def delete_issue(issue_id: int, db: Session = Depends(get_db)):
         if not issue:
             raise HTTPException(status_code=404, detail="Issue not found.")
             
+        # Cancel any active background scraping task
+        if issue_id in active_scrapers:
+            task = active_scrapers.pop(issue_id)
+            task.cancel()
+            
         db.delete(issue)
         db.commit()
         return {"status": "success", "message": f"Issue '{issue.nama_isu}' deleted successfully along with its sentiment data."}
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         logger.error("Error deleting issue %s: %s", issue_id, e)
@@ -330,6 +439,61 @@ async def trigger_scrape(
     except Exception as e:
         logger.error("Unexpected error dispatching background task for issue %s: %s", issue_id, e)
         raise HTTPException(status_code=500, detail="Failed to dispatch background scrape.")
+
+
+@app.post("/issues/{issue_id}/start-scrape", tags=["Scraping"])
+async def start_continuous_scrape(issue_id: int, db: Session = Depends(get_db)):
+    """
+    Start continuous background scraping for a specific issue.
+    """
+    issue = db.query(Issue).filter(Issue.id == issue_id, Issue.is_active == True).first()
+    if not issue:
+        raise HTTPException(status_code=404, detail="Active issue not found.")
+    
+    if issue.is_scraping:
+        # Check if task actually exists and is running in active_scrapers
+        if issue_id in active_scrapers and not active_scrapers[issue_id].done():
+            return {"status": "running", "message": f"Continuous sync is already active for issue '{issue.nama_isu}'."}
+        
+    # Update state in DB
+    issue.is_scraping = True
+    db.commit()
+    db.refresh(issue)
+
+    # Spawn background task
+    task = asyncio.create_task(run_continuous_scrape(issue_id))
+    active_scrapers[issue_id] = task
+
+    return {
+        "status": "started",
+        "message": f"Continuous synchronization started for issue '{issue.nama_isu}'. It will run indefinitely in the background."
+    }
+
+
+@app.post("/issues/{issue_id}/stop-scrape", tags=["Scraping"])
+async def stop_continuous_scrape(issue_id: int, db: Session = Depends(get_db)):
+    """
+    Stop continuous background scraping for a specific issue.
+    """
+    issue = db.query(Issue).filter(Issue.id == issue_id).first()
+    if not issue:
+        raise HTTPException(status_code=404, detail="Issue not found.")
+    
+    # Update state in DB
+    issue.is_scraping = False
+    db.commit()
+    db.refresh(issue)
+
+    # Cancel the background task if it exists
+    task = active_scrapers.get(issue_id)
+    if task:
+        task.cancel()
+        logger.info("Cancelled scraping task for issue ID %s upon stop request", issue_id)
+    
+    return {
+        "status": "stopped",
+        "message": f"Continuous synchronization stopped for issue '{issue.nama_isu}'."
+    }
 
 
 @app.get("/analytics/{issue_id}", tags=["Analytics"])

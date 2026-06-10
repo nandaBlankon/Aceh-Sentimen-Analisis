@@ -18,6 +18,7 @@ class Issue(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_scraping: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Cached AI Summaries
     ringkasan_umum: Mapped[str | None] = mapped_column(Text, nullable=True)

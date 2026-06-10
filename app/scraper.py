@@ -135,6 +135,14 @@ async def scrape_and_store_sentiment(
 
         combined_text = f"{title}. {clean_description}"
 
+        # Deduplication check
+        existing = db.query(SentimentData.id).filter(
+            SentimentData.issue_id == issue.id,
+            SentimentData.teks == combined_text[:2000]
+        ).first()
+        if existing:
+            continue
+
         try:
             # AI Engine analysis
             sentiment_label, confidence = await analyze_sentiment(combined_text)
@@ -310,6 +318,15 @@ async def scrape_tiktok_comments(
                             comment_text = comment.get("text") or comment.get("comment_text") or comment.get("desc")
                         
                         if not comment_text or not comment_text.strip():
+                            continue
+
+                        comment_text_clean = comment_text.strip()
+                        # Deduplication check
+                        existing = db.query(SentimentData.id).filter(
+                            SentimentData.issue_id == issue.id,
+                            SentimentData.teks == comment_text_clean[:2000]
+                        ).first()
+                        if existing:
                             continue
 
                         # Analyze sentiment
